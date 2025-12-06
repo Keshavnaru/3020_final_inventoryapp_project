@@ -1,0 +1,185 @@
+import json
+import boto3
+from decimal import Decimal
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('Inventory')
+
+# Helper function to convert Decimals for JSON serialization
+def decimal_default(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    raise TypeError
+
+def lambda_handler(event, context):
+    print(f"DEBUG - Full event: {json.dumps(event, indent=2, default=decimal_default)}")
+    
+    # If event is empty (API Gateway issue), try to work around it
+    if not event or event == {}:
+        print("WARNING: Empty event received from API Gateway")
+        print("Check API Gateway Lambda Proxy integration is enabled")
+        
+        return {
+            'statusCode': 500,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({
+                'error': 'API Gateway configuration issue',
+                'message': 'Lambda Proxy integration not enabled for DELETE route',
+                'fix': 'Enable "Use Lambda Proxy integration" in API Gateway DELETE method'
+            }, indent=2)
+        }
+    
+    # Extract parameters
+    item_id = None
+    location_id = None
+    
+    # Try to get from pathParameters
+    if event.get('pathParameters'):
+        if 'id' in event['pathParameters']:
+            item_id = event['pathParameters']['id']
+            print(f"Got item_id from pathParameters: {item_id}")
+        
+        if 'location_id' in event['pathParameters']:
+            try:
+                location_id = int(event['pathParameters']['location_id'])
+                print(f"Got location_id from pathParameters: {location_id}")
+            except (ValueError, TypeError):
+                location_id = None
+    
+    # Try to get from queryStringParameters
+    if event.get('queryStringParameters'):
+        query_params = event['queryStringParameters']
+        print(f"Query params: {query_params}")
+        
+        if 'id' in query_params and not item_id:
+            item_id = query_params['id']
+            print(f"Got item_id from queryString: {item_id}")
+        
+        if 'location_id' in query_params and not location_id:
+            try:
+                location_id = int(query_params['location_id'])
+                print(f"Got location_id from queryString: {location_id}")
+            except (ValueError, TypeError):
+                return {
+                    'statusCode': 400,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'error': 'Invalid location_id. Must be a number.'
+                    }, indent=2)
+                }
+    
+    # Try to extract from raw path
+    if not item_id and event.get('path'):
+        path = event['path']  # e.g., "/dev/item/sport9"
+        parts = path.split('/')
+        if len(parts) >= 3:
+            item_id = parts[-1]  # Last part should be the ID
+            print(f"Extracted item_id from path: {item_id}")
+    
+    if not item_id:
+        return {
+            'statusCode': 400,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({
+                'error': 'Missing item ID',
+                'event_received': event
+            }, indent=2)
+        }
+    
+    # Perform deletion
+    try:
+        if location_id:
+            # Delete specific item with both keys
+            response = table.delete_item(
+                Key={
+                    'id': item_id,
+                    'location_id': location_id
+                },
+                ReturnValues='ALL_OLD'
+            )
+            
+            if 'Attributes' in response:
+                return {
+                    'statusCode': 200,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps(response['Attributes'], default=decimal_default, indent=2)
+                }
+            else:
+                return {
+                    'statusCode': 404,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'message': f'Item not found: {item_id} (location: {location_id})'
+                    }, indent=2)
+                }
+        else:
+            # Delete all items with this ID (across all locations)
+            query_response = table.query(
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('id').eq(item_id)
+            )
+            
+            if not query_response['Items']:
+                return {
+                    'statusCode': 404,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'message': f'No items found with id: {item_id}'
+                    }, indent=2)
+                }
+            
+            # Delete each item
+            deleted_items = []
+            for item in query_response['Items']:
+                delete_response = table.delete_item(
+                    Key={
+                        'id': item['id'],
+                        'location_id': item['location_id']
+                    },
+                    ReturnValues='ALL_OLD'
+                )
+                if 'Attributes' in delete_response:
+                    deleted_items.append(delete_response['Attributes'])
+            
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'message': f'Deleted {len(deleted_items)} item(s)',
+                    'deleted_count': len(deleted_items),
+                    'deleted_items': deleted_items
+                }, default=decimal_default, indent=2)
+            }
+            
+    except Exception as e:
+        print(f"Delete error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({
+                'error': f'Delete failed: {str(e)}'
+            }, indent=2)
+        }
