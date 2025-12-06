@@ -1,0 +1,66 @@
+import json
+import boto3
+from decimal import Decimal
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('Inventory')
+
+def decimal_default(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    raise TypeError
+
+def lambda_handler(event, context):
+    try:
+        location_id = int(event['pathParameters']['id'])
+        
+        # Use Scan with FilterExpression (less efficient than Query)
+        response = table.scan(
+            FilterExpression=boto3.dynamodb.conditions.Attr('location_id').eq(location_id)
+        )
+        
+        items = response['Items']
+        
+        # Handle pagination if you have more than 1MB of data
+        while 'LastEvaluatedKey' in response:
+            response = table.scan(
+                FilterExpression=boto3.dynamodb.conditions.Attr('location_id').eq(location_id),
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            items.extend(response['Items'])
+        
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps(items, default=decimal_default, indent=2)
+        }
+    except ValueError as e:
+        return {
+            'statusCode': 400,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({'error': 'Invalid location ID format. Must be a number.'}, indent=2)
+        }
+    except KeyError as e:
+        return {
+            'statusCode': 400,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({'error': f'Missing path parameter: {str(e)}'}, indent=2)
+        }
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({'error': str(e)}, indent=2)
+        }
