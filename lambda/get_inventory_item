@@ -1,0 +1,111 @@
+import json
+import boto3
+from decimal import Decimal
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('Inventory')
+
+def decimal_default(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    raise TypeError
+
+def lambda_handler(event, context):
+    print(f"Full event received: {json.dumps(event, indent=2)}")
+    
+    try:
+        # Debug: Print all available keys in event
+        print(f"Event keys: {list(event.keys())}")
+        
+        if 'pathParameters' not in event:
+            return {
+                'statusCode': 400,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'error': 'No pathParameters in event',
+                    'event_keys': list(event.keys()),
+                    'event_received': event
+                }, indent=2)
+            }
+        
+        if not event.get('pathParameters'):
+            return {
+                'statusCode': 400,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'error': 'pathParameters is empty or null',
+                    'pathParameters_received': event.get('pathParameters')
+                }, indent=2)
+            }
+        
+        print(f"pathParameters: {event['pathParameters']}")
+        
+        # Check what parameters we actually have
+        if 'id' not in event['pathParameters']:
+            return {
+                'statusCode': 400,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'error': 'id not found in pathParameters',
+                    'available_params': list(event['pathParameters'].keys()),
+                    'all_path_params': event['pathParameters']
+                }, indent=2)
+            }
+        
+        item_id = event['pathParameters']['id']
+        print(f"Looking for item with id: {item_id}")
+        
+        # Query DynamoDB by id (partition key only)
+        response = table.query(
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('id').eq(item_id)
+        )
+        
+        print(f"DynamoDB response: {response}")
+        
+        if response['Items']:
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'count': len(response['Items']),
+                    'items': response['Items']
+                }, default=decimal_default, indent=2)
+            }
+        else:
+            return {
+                'statusCode': 404,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'error': f'No items found with id: {item_id}',
+                    'search_id': item_id
+                }, indent=2)
+            }
+            
+    except Exception as e:
+        print(f"Error occurred: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({
+                'error': str(e),
+                'message': 'Internal server error'
+            }, indent=2)
+        }
